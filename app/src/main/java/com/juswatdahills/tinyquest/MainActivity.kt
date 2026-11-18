@@ -130,7 +130,7 @@ private class GameView(context: Context) : View(context) {
                     enemyShots.add(Shot(e.x, e.y - 25f, if (distance < 0) -1f else 1f, 2.8f, true))
                     e.cooldown = 2.1f
                 }
-                if (abs(distance) < if (e.kind == 2) 62f else 39f && hurtCooldown <= 0f) hurt(if (e.kind == 2) 18 else 9)
+                if (abs(distance) < (if (e.kind == 2) 62f else 39f) && hurtCooldown <= 0f) hurt(if (e.kind == 2) 18 else 9)
             }
         }
 
@@ -138,7 +138,7 @@ private class GameView(context: Context) : View(context) {
         while (shotIterator.hasNext()) {
             val s = shotIterator.next()
             s.x += s.dir * 590f * dt; s.life -= dt
-            val hit = enemies.firstOrNull { it.alive && abs(it.x - s.x) < if (it.kind == 2) 58f else 30f && abs(it.y - s.y) < 65f }
+            val hit = enemies.firstOrNull { it.alive && abs(it.x - s.x) < (if (it.kind == 2) 58f else 30f) && abs(it.y - s.y) < 65f }
             if (hit != null) {
                 hit.hp -= 2
                 if (hit.hp <= 0) defeat(hit)
