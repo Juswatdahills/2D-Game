@@ -4,9 +4,8 @@ import android.app.Activity
 import android.content.Context
 import android.os.Bundle
 import android.graphics.Canvas
-import android.graphics.Paint
 import android.graphics.Color
-import android.graphics.RectF
+import android.graphics.Paint
 import android.view.MotionEvent
 import android.view.View
 import kotlin.math.*
@@ -14,231 +13,417 @@ import kotlin.math.*
 class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.decorView.systemUiVisibility =
-            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         setContentView(GameView(this))
     }
 }
 
 private class GameView(context: Context) : View(context) {
-    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
-    private var playerX = 160f
-    private var playerY = 0f
-    private var velocityY = 0f
-    private var cameraX = 0f
+    private val paint = Paint().apply { isAntiAlias = false; isFilterBitmap = false }
+    private val worldWidth = 4800f
+    private val ground get() = height * .79f
+    private var px = 150f
+    private var py = 0f
+    private var vy = 0f
+    private var camera = 0f
     private var facing = 1f
     private var hp = 100
-    private var mana = 100
-    private var xp = 0
+    private var mana = 100f
     private var coins = 0
-    private var message = "Explore the land. Defeat the slimes!"
+    private var score = 0
+    private var stage = 0
+    private var message = "RUN • JUMP • FIGHT"
+    private var messageTimer = 2.5f
     private var gameOver = false
-    private var lastAttack = 0L
-    private var lastSkill = 0L
+    private var won = false
+    private var grounded = false
+    private var joy = 0f
     private var lastFrame = 0L
-    private var joyX = 0f
-    private var jumpHeld = false
-    private var onGround = false
-    private val groundY get() = height * .78f
-    private val worldWidth = 2600f
+    private var attackCooldown = 0f
+    private var skillCooldown = 0f
+    private var hurtCooldown = 0f
+    private var attackFlash = 0f
+    private var animTime = 0f
     private val enemies = mutableListOf<Enemy>()
     private val shots = mutableListOf<Shot>()
-    private data class Enemy(var x: Float, var hp: Int = 3, var alive: Boolean = true, var dir: Float = -1f)
-    private data class Shot(var x: Float, var y: Float, var dir: Float, var life: Int = 70)
+    private val enemyShots = mutableListOf<Shot>()
+    private val platforms = mutableListOf<Platform>()
+    private val pickups = mutableListOf<Pickup>()
+    private data class Enemy(var x: Float, var y: Float, var hp: Int, var kind: Int, var alive: Boolean = true, var dir: Float = -1f, var cooldown: Float = 0f)
+    private data class Shot(var x: Float, var y: Float, var dir: Float, var life: Float = 2f, var hostile: Boolean = false)
+    private data class Platform(val x: Float, val y: Float, val w: Float)
+    private data class Pickup(var x: Float, var y: Float, var kind: Int, var taken: Boolean = false)
 
-    init { isFocusable = true }
+    init { isFocusable = true; reset() }
 
     private fun reset() {
-        playerX = 160f; playerY = groundY - 42f; velocityY = 0f; cameraX = 0f
-        hp = 100; mana = 100; xp = 0; coins = 0; gameOver = false
-        enemies.clear(); shots.clear()
-        for (x in listOf(560f, 920f, 1320f, 1770f, 2200f)) enemies.add(Enemy(x))
-        message = "Explore the land. Defeat the slimes!"
+        px = 150f; py = ground - 44f; vy = 0f; camera = 0f
+        hp = 100; mana = 100f; coins = 0; score = 0; stage = 0
+        gameOver = false; won = false; joy = 0f
+        enemies.clear(); shots.clear(); enemyShots.clear(); platforms.clear(); pickups.clear()
+        val platformData = listOf(
+            Triple(420f, .58f, 150f), Triple(720f, .49f, 130f), Triple(1040f, .60f, 170f),
+            Triple(1480f, .55f, 160f), Triple(1810f, .46f, 150f), Triple(2220f, .60f, 180f),
+            Triple(2670f, .54f, 170f), Triple(3020f, .45f, 150f), Triple(3440f, .58f, 180f),
+            Triple(3820f, .50f, 160f), Triple(4210f, .60f, 180f)
+        )
+        platformData.forEach { platforms.add(Platform(it.first, height * it.second, it.third)) }
+        listOf(530f, 880f, 1250f, 1640f, 2040f, 2470f, 2860f, 3260f, 3660f, 4050f, 4430f).forEachIndexed { i, x ->
+            enemies.add(Enemy(x, ground - 34f, if (i == 10) 18 else 3 + i % 2, if (i == 10) 2 else i % 2))
+        }
+        for (x in listOf(350f, 650f, 970f, 1380f, 1740f, 2140f, 2580f, 2940f, 3370f, 3750f, 4150f)) {
+            pickups.add(Pickup(x, ground - 65f, 0))
+        }
+        pickups.add(Pickup(1120f, ground - 150f, 1))
+        pickups.add(Pickup(3140f, ground - 145f, 1))
+        say("THE GREEN WILDS • STAGE 1")
     }
 
-    override fun onDraw(c: Canvas) {
-        super.onDraw(c)
-        if (playerY == 0f) reset()
+    private fun say(text: String) { message = text; messageTimer = 2.2f }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
         val now = System.currentTimeMillis()
-        val dt = if (lastFrame == 0L) .016f else ((now-lastFrame).coerceIn(1L,40L)/1000f)
+        val dt = if (lastFrame == 0L) .016f else ((now - lastFrame).coerceIn(1L, 34L) / 1000f)
         lastFrame = now
-        if (!gameOver) updateWorld(dt)
-        drawWorld(c)
+        if (py == 0f) py = ground - 44f
+        if (!gameOver && !won) update(dt)
+        drawScene(canvas)
         postInvalidateDelayed(16)
     }
 
-    private fun updateWorld(dt: Float) {
-        val currentTime = System.currentTimeMillis()
-        playerX = (playerX + joyX * 260f * dt).coerceIn(25f, worldWidth-25f)
-        if (joyX != 0f) facing = if (joyX > 0f) 1f else -1f
-        velocityY += 1450f * dt
-        playerY += velocityY * dt
-        if (playerY + 42f >= groundY) {
-            playerY = groundY - 42f; velocityY = 0f; onGround = true
-        } else onGround = false
-        cameraX = (playerX - width*.38f).coerceIn(0f, worldWidth-width.toFloat())
-        enemies.filter { it.alive }.forEach { enemy ->
-            if (abs(enemy.x-playerX) < 310f) {
-                enemy.dir = if (playerX < enemy.x) -1f else 1f
-                enemy.x += enemy.dir * 48f * dt
-                if (abs(enemy.x-playerX) < 43f && currentTime-lastAttack > 850) {
-                    hp = (hp-5).coerceAtLeast(0)
-                    lastAttack = currentTime
-                    if (hp == 0) { gameOver = true; message = "You were defeated!" }
+    private fun update(dt: Float) {
+        animTime += dt
+        attackCooldown = (attackCooldown - dt).coerceAtLeast(0f)
+        skillCooldown = (skillCooldown - dt).coerceAtLeast(0f)
+        hurtCooldown = (hurtCooldown - dt).coerceAtLeast(0f)
+        attackFlash = (attackFlash - dt).coerceAtLeast(0f)
+        messageTimer = (messageTimer - dt).coerceAtLeast(0f)
+        mana = (mana + 9f * dt).coerceAtMost(100f)
+
+        val oldBottom = py + 44f
+        px = (px + joy * 300f * dt).coerceIn(20f, worldWidth - 35f)
+        if (joy != 0f) facing = if (joy > 0f) 1f else -1f
+        vy += 1500f * dt
+        py += vy * dt
+        grounded = false
+        if (py + 44f >= ground) { py = ground - 44f; vy = 0f; grounded = true }
+        if (vy >= 0f) {
+            platforms.forEach { platform ->
+                if (px + 13f > platform.x && px - 13f < platform.x + platform.w &&
+                    oldBottom <= platform.y + 5f && py + 44f >= platform.y) {
+                    py = platform.y - 44f; vy = 0f; grounded = true
                 }
             }
         }
-        val iterator = shots.iterator()
-        while (iterator.hasNext()) {
-            val shot = iterator.next()
-            shot.x += shot.dir * 520f * dt
-            shot.life--
-            val hit = enemies.firstOrNull { it.alive && abs(it.x-shot.x) < 34f }
+        if (py > height + 120f) hurt(30)
+        camera = (px - width * .36f).coerceIn(0f, worldWidth - width.toFloat())
+
+        enemies.filter { it.alive }.forEach { e ->
+            e.cooldown = (e.cooldown - dt).coerceAtLeast(0f)
+            val distance = px - e.x
+            if (abs(distance) < 390f) {
+                e.dir = if (distance < 0f) -1f else 1f
+                e.x += e.dir * (if (e.kind == 2) 32f else 65f) * dt
+                if (e.kind == 1 && e.cooldown <= 0f && abs(distance) < 300f) {
+                    enemyShots.add(Shot(e.x, e.y - 25f, if (distance < 0) -1f else 1f, 2.8f, true))
+                    e.cooldown = 2.1f
+                }
+                if (abs(distance) < if (e.kind == 2) 62f else 39f && hurtCooldown <= 0f) hurt(if (e.kind == 2) 18 else 9)
+            }
+        }
+
+        val shotIterator = shots.iterator()
+        while (shotIterator.hasNext()) {
+            val s = shotIterator.next()
+            s.x += s.dir * 590f * dt; s.life -= dt
+            val hit = enemies.firstOrNull { it.alive && abs(it.x - s.x) < if (it.kind == 2) 58f else 30f && abs(it.y - s.y) < 65f }
             if (hit != null) {
                 hit.hp -= 2
-                if (hit.hp <= 0) { hit.alive = false; xp += 15; coins += 5; message = "Slime defeated! +15 XP, +5 coins" }
-                iterator.remove()
-            } else if (shot.life <= 0 || shot.x < 0 || shot.x > worldWidth) iterator.remove()
+                if (hit.hp <= 0) defeat(hit)
+                shotIterator.remove()
+            } else if (s.life <= 0f || s.x < 0f || s.x > worldWidth) shotIterator.remove()
         }
-        if (mana < 100) mana = (mana + 5f*dt).toInt().coerceAtMost(100)
-        if (enemies.none { it.alive }) message = "All slimes defeated! You cleared the stage!"
+        val enemyIterator = enemyShots.iterator()
+        while (enemyIterator.hasNext()) {
+            val s = enemyIterator.next()
+            s.x += s.dir * 250f * dt; s.life -= dt
+            if (abs(s.x - px) < 25f && abs(s.y - (py + 20f)) < 38f && hurtCooldown <= 0f) {
+                hurt(12); enemyIterator.remove()
+            } else if (s.life <= 0f || s.x < 0f || s.x > worldWidth) enemyIterator.remove()
+        }
+        pickups.filter { !it.taken }.forEach { item ->
+            if (abs(item.x - px) < 30f && abs(item.y - (py + 20f)) < 55f) {
+                item.taken = true
+                if (item.kind == 0) { coins += 1; score += 100; say("+1 COIN") }
+                else { hp = (hp + 30).coerceAtMost(100); say("HEALTH RESTORED") }
+            }
+        }
+        stage = (px / 1600f).toInt().coerceIn(0, 2)
+        if (px > 4650f && enemies.none { it.alive }) { won = true; say("WORLD CLEARED!") }
+        if (px > 4650f && enemies.any { it.alive && it.kind == 2 }) say("DEFEAT THE FOREST GUARDIAN!")
     }
 
-    private fun drawWorld(c: Canvas) {
+    private fun hurt(amount: Int) {
+        if (hurtCooldown > 0f) return
+        hp = (hp - amount).coerceAtLeast(0); hurtCooldown = 1f
+        if (hp == 0) { gameOver = true; say("YOU HAVE FALLEN") }
+    }
+
+    private fun defeat(e: Enemy) {
+        e.alive = false; score += if (e.kind == 2) 2500 else 250
+        coins += if (e.kind == 2) 10 else 2
+        say(if (e.kind == 2) "GUARDIAN DEFEATED! +10 COINS" else "ENEMY DEFEATED! +2 COINS")
+    }
+
+    private fun jump() {
+        if (!gameOver && !won && grounded) { vy = -610f; grounded = false }
+    }
+
+    private fun attack() {
+        if (gameOver || won || attackCooldown > 0f) return
+        attackCooldown = .34f; attackFlash = .18f
+        val target = enemies.firstOrNull { it.alive && (it.x - px) * facing in 0f..105f && abs(it.y - py) < 90f }
+        if (target != null) { target.hp -= 2; if (target.hp <= 0) defeat(target) else say("SWORD STRIKE!") }
+        else say("SWING!")
+    }
+
+    private fun skill() {
+        if (gameOver || won || skillCooldown > 0f) return
+        if (mana < 25f) { say("NOT ENOUGH ENERGY"); return }
+        mana -= 25f; skillCooldown = .55f
+        shots.add(Shot(px + facing * 25f, py + 5f, facing))
+        say("ARCANE BLAST!")
+    }
+
+    private fun color(c: Canvas, col: Int, l: Float, t: Float, r: Float, b: Float) {
+        paint.color = col; c.drawRect(l, t, r, b, paint)
+    }
+    private fun rect(c: Canvas, x: Float, y: Float, w: Float, h: Float, col: Int) = color(c, col, x, y, x + w, y + h)
+    private fun text(c: Canvas, value: String, x: Float, y: Float, size: Float, col: Int = Color.WHITE) {
+        paint.color = col; paint.textSize = size; paint.typeface = android.graphics.Typeface.create("monospace", android.graphics.Typeface.BOLD); c.drawText(value, x, y, paint)
+    }
+
+    private fun drawScene(c: Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
-        c.drawColor(Color.rgb(116, 190, 231))
-        // distant hills
-        p.color = Color.rgb(104, 174, 132)
-        for (i in -1..7) {
-            val x = i*430f - (cameraX*.22f % 430f)
-            c.drawCircle(x, groundY-80f, 180f, p)
-        }
-        c.save()
-        c.translate(-cameraX, 0f)
-        // ground and dirt
-        p.color = Color.rgb(82, 164, 75); c.drawRect(cameraX,groundY, cameraX+w, h,p)
-        p.color = Color.rgb(119, 79, 48); c.drawRect(cameraX,groundY+28f,cameraX+w,h,p)
-        // platforms and scenery
-        for (x in 300..2400 step 400) {
-            p.color = Color.rgb(115, 75, 45); c.drawRoundRect(x.toFloat(),groundY-110f,x+150f,groundY-88f,8f,8f,p)
-            p.color = Color.rgb(75, 170, 74); c.drawRect(x.toFloat(),groundY-116f,x+150f,groundY-106f,p)
-        }
-        for (x in 180..2500 step 520) {
-            p.color = Color.rgb(112, 77, 48); c.drawRect(x.toFloat(),groundY-65f,x+22f,groundY,p)
-            p.color = Color.rgb(42, 133, 60); c.drawCircle(x+10f,groundY-82f,48f,p)
-            p.color = Color.rgb(55, 155, 68); c.drawCircle(x-18f,groundY-65f,30f,p)
-            c.drawCircle(x+36f,groundY-66f,30f,p)
-        }
-        // enemies
-        enemies.filter { it.alive }.forEach { e ->
-            p.color = Color.rgb(54, 193, 105); c.drawOval(e.x-22f,groundY-43f,e.x+22f,groundY-5f,p)
-            p.color = Color.WHITE; c.drawCircle(e.x-8f,groundY-31f,5f,p); c.drawCircle(e.x+8f,groundY-31f,5f,p)
-            p.color = Color.BLACK; c.drawCircle(e.x-8f,groundY-31f,2.5f,p); c.drawCircle(e.x+8f,groundY-31f,2.5f,p)
-            p.color = Color.RED; c.drawRect(e.x-19f,groundY-52f,e.x+19f,groundY-47f,p)
-            p.color = Color.GREEN; c.drawRect(e.x-19f,groundY-52f,e.x-19f+38f*e.hp/3f,groundY-47f,p)
-        }
-        // magic projectiles
-        shots.forEach { s ->
-            p.color = Color.rgb(91, 220, 255); c.drawCircle(s.x,s.y,12f,p)
-            p.color = Color.WHITE; c.drawCircle(s.x,s.y,5f,p)
-        }
-        // player hero
-        val x = playerX
-        p.color = Color.rgb(42, 75, 190); c.drawRoundRect(x-17f,playerY-24f,x+17f,playerY+42f,8f,8f,p)
-        p.color = Color.rgb(241, 192, 145); c.drawCircle(x,playerY-31f,16f,p)
-        p.color = Color.rgb(66, 43, 28); c.drawArc(x-17f,playerY-47f,x+17f,playerY-19f,180f,180f,true,p)
-        p.color = Color.BLACK; c.drawCircle(x+facing*6f,playerY-33f,2.5f,p)
+        val sky = when (stage) { 0 -> Color.rgb(100, 185, 224); 1 -> Color.rgb(80, 102, 145); else -> Color.rgb(79, 58, 103) }
+        c.drawColor(sky)
+        drawBackground(c, w, h)
+        c.save(); c.translate(-camera, 0f)
+        drawGround(c, w, h)
+        platforms.forEach { drawPlatform(c, it) }
+        pickups.filter { !it.taken }.forEach { item -> drawPickup(c, item) }
+        enemies.filter { it.alive }.forEach { drawEnemy(c, it) }
+        shots.forEach { drawShot(c, it, false) }
+        enemyShots.forEach { drawShot(c, it, true) }
+        drawHero(c)
         c.restore()
+        drawHud(c, w, h)
+    }
 
-        // HUD
-        p.color = Color.argb(205,20,28,42); c.drawRoundRect(14f,12f,250f,92f,12f,12f,p)
-        p.color = Color.WHITE; p.textSize = 18f; c.drawText("TINY QUEST",26f,35f,p)
-        p.textSize = 14f; c.drawText("HP $hp   XP $xp   Coins $coins",26f,58f,p)
-        p.color = Color.rgb(70,70,80); c.drawRoundRect(26f,68f,220f,78f,5f,5f,p)
-        p.color = Color.rgb(70,210,255); c.drawRoundRect(26f,68f,26f+194f*mana/100f,78f,5f,5f,p)
-        p.color = Color.WHITE; p.textSize = 12f; c.drawText("MANA",26f,89f,p)
-
-        // Virtual joystick
-        val baseX = 100f; val baseY = h-100f
-        p.color = Color.argb(95,25,35,50); c.drawCircle(baseX,baseY,60f,p)
-        p.color = Color.argb(190,220,230,240)
-        c.drawCircle(baseX+joyX*34f,baseY,27f,p)
-        p.color = Color.rgb(55,70,90); c.drawCircle(baseX+joyX*34f,baseY,13f,p)
-        drawControl(c,w-190f,h-92f,"JUMP")
-        drawControl(c,w-95f,h-92f,"HIT")
-        drawControl(c,w-95f,h-190f,"SKILL")
-        p.color = Color.WHITE; p.textSize = 14f
-        c.drawText(message, w*.34f, 28f, p)
-        if (gameOver) {
-            p.color = Color.argb(210,0,0,0); c.drawRect(0f,0f,w,h,p)
-            p.color = Color.WHITE; p.textSize = 34f; c.drawText("GAME OVER",w*.39f,h*.44f,p)
-            p.textSize = 19f; c.drawText("Tap anywhere to restart",w*.38f,h*.54f,p)
+    private fun drawBackground(c: Canvas, w: Float, h: Float) {
+        // Distant parallax mountains
+        val shift = camera * .18f
+        for (i in -1..7) {
+            val x = i * 390f - (shift % 390f)
+            val base = ground - 55f
+            val mountain = if (stage == 0) Color.rgb(71, 139, 111) else if (stage == 1) Color.rgb(65, 76, 112) else Color.rgb(94, 63, 111)
+            rect(c, x + 55f, base - 160f, 170f, 160f, mountain)
+            rect(c, x + 25f, base - 110f, 230f, 110f, mountain)
+            rect(c, x + 85f, base - 205f, 110f, 50f, mountain)
+            rect(c, x + 105f, base - 235f, 70f, 30f, mountain)
+            rect(c, x + 125f, base - 260f, 30f, 25f, mountain)
+            val cloud = Color.argb(110, 255, 255, 255)
+            rect(c, x + 25f, 85f + (i % 3) * 25f, 70f, 12f, cloud)
+            rect(c, x + 45f, 73f + (i % 3) * 25f, 40f, 12f, cloud)
+        }
+        // Parallax trees and ruins
+        for (i in -1..10) {
+            val x = i * 250f - (camera * .42f % 250f)
+            val trunk = if (stage == 0) Color.rgb(105, 67, 42) else Color.rgb(48, 48, 64)
+            val leaves = if (stage == 0) Color.rgb(34, 112, 66) else if (stage == 1) Color.rgb(63, 66, 92) else Color.rgb(103, 53, 83)
+            rect(c, x + 65f, ground - 135f, 18f, 135f, trunk)
+            rect(c, x + 30f, ground - 185f, 90f, 55f, leaves)
+            rect(c, x + 45f, ground - 205f, 60f, 25f, leaves)
+            rect(c, x + 10f, ground - 160f, 35f, 35f, leaves)
+            rect(c, x + 100f, ground - 160f, 35f, 35f, leaves)
+        }
+        // Tiny stars in later worlds
+        if (stage > 0) for (i in 0..28) {
+            val x = ((i * 173f - camera * .08f) % w + w) % w
+            rect(c, x, 35f + (i * 47 % 150), 3f, 3f, Color.rgb(255, 238, 171))
         }
     }
 
-    private fun drawControl(c: Canvas,x:Float,y:Float,label:String) {
-        p.color = Color.argb(165,25,35,55); c.drawCircle(x,y,43f,p)
-        p.color = Color.WHITE; p.textSize = if (label=="SKILL") 13f else 14f
-        val tw=p.measureText(label); c.drawText(label,x-tw/2f,y+5f,p)
+    private fun drawGround(c: Canvas, w: Float, h: Float) {
+        val top = when (stage) { 0 -> Color.rgb(71, 158, 74); 1 -> Color.rgb(83, 105, 121); else -> Color.rgb(126, 68, 86) }
+        val dirt = when (stage) { 0 -> Color.rgb(105, 70, 48); 1 -> Color.rgb(61, 59, 78); else -> Color.rgb(74, 46, 70) }
+        rect(c, camera - 2f, ground, w + 4f, h - ground + 20f, dirt)
+        rect(c, camera - 2f, ground, w + 4f, 15f, top)
+        for (x in (camera.toInt() / 48 * 48)..(camera.toInt() + w.toInt() + 48) step 48) {
+            rect(c, x.toFloat(), ground + 22f, 24f, 5f, Color.argb(100, 25, 25, 30))
+            rect(c, x + 28f, ground + 52f, 10f, 5f, Color.argb(80, 20, 20, 25))
+        }
     }
 
-    override fun onTouchEvent(e: MotionEvent): Boolean {
-        if (gameOver && e.actionMasked == MotionEvent.ACTION_DOWN) { reset(); invalidate(); return true }
-        val joyCenter = 100f
-        val joyY = height-100f
-        when (e.actionMasked) {
+    private fun drawPlatform(c: Canvas, p: Platform) {
+        val stone = if (stage == 0) Color.rgb(119, 82, 54) else Color.rgb(82, 75, 91)
+        rect(c, p.x, p.y, p.w, 17f, stone)
+        rect(c, p.x, p.y, p.w, 5f, if (stage == 0) Color.rgb(87, 176, 76) else Color.rgb(150, 112, 112))
+        for (i in 0 until (p.w / 28f).toInt()) rect(c, p.x + i * 28f + 5f, p.y + 9f, 12f, 4f, Color.argb(80, 20, 20, 25))
+    }
+
+    private fun drawPickup(c: Canvas, item: Pickup) {
+        val bob = sin(animTime * 4f + item.x) * 4f
+        if (item.kind == 0) {
+            rect(c, item.x - 7f, item.y - 7f + bob, 14f, 14f, Color.rgb(255, 194, 43))
+            rect(c, item.x - 4f, item.y - 10f + bob, 8f, 20f, Color.rgb(255, 229, 111))
+            rect(c, item.x - 2f, item.y - 5f + bob, 4f, 10f, Color.rgb(180, 112, 24))
+        } else {
+            rect(c, item.x - 11f, item.y - 11f + bob, 22f, 22f, Color.rgb(220, 54, 74))
+            rect(c, item.x - 3f, item.y - 8f + bob, 6f, 16f, Color.WHITE)
+            rect(c, item.x - 8f, item.y - 3f + bob, 16f, 6f, Color.WHITE)
+        }
+    }
+
+    private fun drawHero(c: Canvas) {
+        val x = px; val y = py
+        val blink = hurtCooldown > .0f && (animTime * 18f).toInt() % 2 == 0
+        if (blink) return
+        val bob = if (grounded && abs(joy) > .1f) (sin(animTime * 15f) * 3f) else 0f
+        val skin = Color.rgb(245, 190, 139)
+        val hair = Color.rgb(61, 39, 34)
+        val coat = Color.rgb(43, 91, 205)
+        val boot = Color.rgb(57, 43, 42)
+        // cape
+        rect(c, x - facing * 15f, y + 1f + bob, 9f, 23f, Color.rgb(176, 47, 58))
+        // legs
+        rect(c, x - 11f, y + 29f + bob, 9f, 12f, boot)
+        rect(c, x + 2f, y + 29f - bob, 9f, 12f, boot)
+        rect(c, x - 12f, y + 39f + bob, 12f, 5f, Color.rgb(30, 28, 38))
+        rect(c, x + 1f, y + 39f - bob, 13f, 5f, Color.rgb(30, 28, 38))
+        // torso and belt
+        rect(c, x - 13f, y + 8f + bob, 26f, 23f, coat)
+        rect(c, x - 13f, y + 25f + bob, 26f, 5f, Color.rgb(233, 174, 56))
+        rect(c, x - 16f, y + 12f + bob, 5f, 15f, skin)
+        rect(c, x + 11f, y + 12f + bob, 5f, 15f, skin)
+        // face and hair
+        rect(c, x - 11f, y - 12f + bob, 22f, 22f, skin)
+        rect(c, x - 13f, y - 17f + bob, 26f, 9f, hair)
+        rect(c, x - 13f, y - 9f + bob, 6f, 8f, hair)
+        rect(c, x + facing * 5f, y - 4f + bob, 4f, 4f, Color.BLACK)
+        rect(c, x - 3f, y + 2f + bob, 7f, 3f, Color.rgb(135, 58, 55))
+        // sword and slash
+        if (attackFlash > 0f) {
+            rect(c, x + facing * 15f, y + 5f, facing * 35f, 5f, Color.rgb(245, 245, 255))
+            rect(c, x + facing * 35f, y - 3f, facing * 5f, 20f, Color.rgb(111, 211, 255))
+        } else {
+            rect(c, x + facing * 15f, y + 17f, facing * 18f, 4f, Color.rgb(222, 226, 237))
+        }
+    }
+
+    private fun drawEnemy(c: Canvas, e: Enemy) {
+        val x = e.x; val y = e.y
+        if (e.kind == 2) {
+            // Large guardian boss
+            rect(c, x - 39f, y - 76f, 78f, 76f, Color.rgb(104, 56, 132))
+            rect(c, x - 31f, y - 89f, 18f, 22f, Color.rgb(72, 39, 103))
+            rect(c, x + 13f, y - 89f, 18f, 22f, Color.rgb(72, 39, 103))
+            rect(c, x - 24f, y - 57f, 13f, 13f, Color.rgb(255, 75, 68))
+            rect(c, x + 11f, y - 57f, 13f, 13f, Color.rgb(255, 75, 68))
+            rect(c, x - 26f, y - 20f, 52f, 10f, Color.rgb(57, 32, 81))
+            rect(c, x - 52f, y - 104f, 104f, 7f, Color.rgb(55, 28, 40))
+            rect(c, x - 52f, y - 104f, 104f * e.hp / 18f, 7f, Color.rgb(244, 66, 70))
+        } else {
+            val body = if (e.kind == 0) Color.rgb(56, 199, 117) else Color.rgb(177, 85, 199)
+            rect(c, x - 19f, y - 27f, 38f, 27f, body)
+            rect(c, x - 13f, y - 35f, 26f, 12f, body)
+            rect(c, x - 11f, y - 23f, 5f, 7f, Color.WHITE)
+            rect(c, x + 6f, y - 23f, 5f, 7f, Color.WHITE)
+            rect(c, x - 9f, y - 21f, 3f, 5f, Color.BLACK)
+            rect(c, x + 8f, y - 21f, 3f, 5f, Color.BLACK)
+            rect(c, x - 15f, y - 39f, 30f, 3f, Color.rgb(55, 36, 46))
+            rect(c, x - 15f, y - 39f, 30f * e.hp / 4f, 3f, Color.rgb(236, 71, 77))
+        }
+    }
+
+    private fun drawShot(c: Canvas, s: Shot, hostile: Boolean) {
+        val col = if (hostile) Color.rgb(255, 92, 77) else Color.rgb(86, 220, 255)
+        rect(c, s.x - 8f, s.y - 5f, 16f, 10f, col)
+        rect(c, s.x - 3f, s.y - 9f, 7f, 18f, Color.WHITE)
+    }
+
+    private fun drawHud(c: Canvas, w: Float, h: Float) {
+        rect(c, 12f, 12f, 244f, 82f, Color.argb(215, 19, 25, 39))
+        rect(c, 16f, 16f, 236f, 74f, Color.argb(170, 54, 69, 94))
+        text(c, "TINY QUEST", 27f, 38f, 18f, Color.rgb(255, 224, 127))
+        text(c, "HP", 27f, 57f, 10f)
+        rect(c, 51f, 49f, 125f, 9f, Color.rgb(67, 38, 50))
+        rect(c, 51f, 49f, 125f * hp / 100f, 9f, Color.rgb(235, 75, 80))
+        text(c, "MP", 27f, 77f, 10f)
+        rect(c, 51f, 68f, 125f, 8f, Color.rgb(39, 48, 72))
+        rect(c, 51f, 68f, 125f * mana / 100f, 8f, Color.rgb(66, 185, 245))
+        text(c, "★ $score", 188f, 57f, 12f, Color.rgb(255, 215, 95))
+        text(c, "¢ $coins", 188f, 77f, 12f, Color.rgb(255, 215, 95))
+        // Stage marker
+        text(c, listOf("GREEN WILDS", "MOON CAVES", "DARK KEEP")[stage], w - 160f, 28f, 12f, Color.WHITE)
+        if (messageTimer > 0f) {
+            val tw = paint.apply { textSize = 13f }.measureText(message)
+            rect(c, w / 2f - tw / 2f - 15f, 42f, tw + 30f, 26f, Color.argb(185, 20, 26, 39))
+            text(c, message, w / 2f - tw / 2f, 60f, 13f, Color.rgb(255, 235, 171))
+        }
+        // Touch controls
+        val jy = h - 94f
+        paint.color = Color.argb(110, 12, 20, 35); c.drawCircle(94f, jy, 58f, paint)
+        paint.color = Color.argb(210, 222, 231, 244); c.drawCircle(94f + joy * 32f, jy, 25f, paint)
+        drawButton(c, w - 205f, h - 78f, "JUMP", Color.rgb(72, 134, 206))
+        drawButton(c, w - 103f, h - 78f, "HIT", Color.rgb(195, 75, 83))
+        drawButton(c, w - 103f, h - 178f, "MAGIC", Color.rgb(111, 78, 190))
+        if (gameOver || won) {
+            rect(c, 0f, 0f, w, h, Color.argb(220, 8, 12, 24))
+            text(c, if (won) "WORLD CLEARED!" else "GAME OVER", w * .34f, h * .43f, 31f, Color.rgb(255, 221, 128))
+            text(c, "TAP ANYWHERE TO PLAY AGAIN", w * .29f, h * .55f, 17f)
+            text(c, "SCORE $score    COINS $coins", w * .38f, h * .64f, 14f, Color.rgb(151, 218, 255))
+        }
+    }
+
+    private fun drawButton(c: Canvas, x: Float, y: Float, label: String, col: Int) {
+        paint.color = Color.argb(125, 10, 15, 28); c.drawCircle(x, y, 42f, paint)
+        paint.color = col; c.drawCircle(x, y, 34f, paint)
+        rect(c, x - 22f, y - 4f, 44f, 2f, Color.argb(75, 255, 255, 255))
+        val size = if (label == "MAGIC") 10f else 12f
+        paint.textSize = size
+        val tw = paint.measureText(label)
+        text(c, label, x - tw / 2f, y + 5f, size)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if ((gameOver || won) && event.actionMasked == MotionEvent.ACTION_DOWN) { reset(); invalidate(); return true }
+        when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_MOVE -> {
-                joyX = 0f
-                for (i in 0 until e.pointerCount) {
-                    val x=e.getX(i); val y=e.getY(i)
-                    if (x < width*.38f && y > height*.58f) {
-                        joyX = ((x-joyCenter)/60f).coerceIn(-1f,1f)
-                    }
+                joy = 0f
+                for (i in 0 until event.pointerCount) {
+                    val x = event.getX(i); val y = event.getY(i)
+                    if (x < width * .34f && y > height * .55f) joy = ((x - 94f) / 54f).coerceIn(-1f, 1f)
                 }
-                if (e.actionMasked == MotionEvent.ACTION_DOWN || e.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
-                    val index=e.actionIndex
-                    val x=e.getX(index); val y=e.getY(index)
-                    if (x > width-145f && y > height-245f && y < height-125f) useSkill()
-                    else if (x > width-145f && y > height-140f) attack()
-                    else if (x > width-245f && x < width-140f && y > height-140f) jump()
+                if (event.actionMasked != MotionEvent.ACTION_MOVE) {
+                    val x = event.getX(event.actionIndex); val y = event.getY(event.actionIndex)
+                    if (x > width - 155f && y > height - 230f && y < height - 120f) skill()
+                    else if (x > width - 155f && y > height - 125f) attack()
+                    else if (x > width - 255f && x < width - 150f && y > height - 125f) jump()
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
-                joyX = 0f
-                for (i in 0 until e.pointerCount) {
-                    if (i == e.actionIndex) continue
-                    val x=e.getX(i); val y=e.getY(i)
-                    if (x < width*.38f && y > height*.58f) joyX=((x-joyCenter)/60f).coerceIn(-1f,1f)
+                joy = 0f
+                for (i in 0 until event.pointerCount) {
+                    if (i == event.actionIndex) continue
+                    val x = event.getX(i); val y = event.getY(i)
+                    if (x < width * .34f && y > height * .55f) joy = ((x - 94f) / 54f).coerceIn(-1f, 1f)
                 }
             }
         }
         invalidate()
         return true
-    }
-
-    private fun jump() {
-        if (onGround && !gameOver) { velocityY = -560f; onGround = false }
-    }
-
-    private fun attack() {
-        val now=System.currentTimeMillis()
-        if (now-lastAttack < 300 || gameOver) return
-        lastAttack=now
-        val target=enemies.firstOrNull { it.alive && abs(it.x-playerX)<85f }
-        if (target != null) {
-            target.hp--
-            if (target.hp<=0) { target.alive=false; xp+=10; coins+=3; message="Slime defeated! +10 XP, +3 coins" }
-            else message="Sword hit!"
-        } else message="No enemy in range!"
-    }
-
-    private fun useSkill() {
-        val now=System.currentTimeMillis()
-        if (gameOver || now-lastSkill<700) return
-        if (mana<25) { message="Not enough mana!"; return }
-        mana-=25; lastSkill=now
-        shots.add(Shot(playerX+facing*30f,playerY-15f,facing))
-        message="Magic bolt!"
     }
 }
