@@ -69,6 +69,7 @@ private class GameView(context: Context) : View(context) {
     }
 
     private fun updateWorld(dt: Float) {
+        val currentTime = System.currentTimeMillis()
         playerX = (playerX + joyX * 260f * dt).coerceIn(25f, worldWidth-25f)
         if (joyX != 0f) facing = if (joyX > 0f) 1f else -1f
         velocityY += 1450f * dt
@@ -81,9 +82,9 @@ private class GameView(context: Context) : View(context) {
             if (abs(enemy.x-playerX) < 310f) {
                 enemy.dir = if (playerX < enemy.x) -1f else 1f
                 enemy.x += enemy.dir * 48f * dt
-                if (abs(enemy.x-playerX) < 43f && now-lastAttack > 850) {
+                if (abs(enemy.x-playerX) < 43f && currentTime-lastAttack > 850) {
                     hp = (hp-5).coerceAtLeast(0)
-                    lastAttack = now
+                    lastAttack = currentTime
                     if (hp == 0) { gameOver = true; message = "You were defeated!" }
                 }
             }
