@@ -50,7 +50,7 @@ private class GameView(context: Context) : View(context) {
     init { isFocusable = true }
 
     private fun reset() {
-        playerX = 160f; playerY = 0f; velocityY = 0f; cameraX = 0f
+        playerX = 160f; playerY = groundY - 42f; velocityY = 0f; cameraX = 0f
         hp = 100; mana = 100; xp = 0; coins = 0; gameOver = false
         enemies.clear(); shots.clear()
         for (x in listOf(560f, 920f, 1320f, 1770f, 2200f)) enemies.add(Enemy(x))
@@ -59,7 +59,7 @@ private class GameView(context: Context) : View(context) {
 
     override fun onDraw(c: Canvas) {
         super.onDraw(c)
-        if (playerY == 0f) { playerY = groundY - 58f; reset() }
+        if (playerY == 0f) reset()
         val now = System.currentTimeMillis()
         val dt = if (lastFrame == 0L) .016f else ((now-lastFrame).coerceIn(1L,40L)/1000f)
         lastFrame = now
@@ -160,7 +160,7 @@ private class GameView(context: Context) : View(context) {
 
         // Virtual joystick
         val baseX = 100f; val baseY = h-100f
-        p.color = Color.argb(95,25,35,50); c.drawCircle(baseX,baseY, sixty(),p)
+        p.color = Color.argb(95,25,35,50); c.drawCircle(baseX,baseY,60f,p)
         p.color = Color.argb(190,220,230,240)
         c.drawCircle(baseX+joyX*34f,baseY,27f,p)
         p.color = Color.rgb(55,70,90); c.drawCircle(baseX+joyX*34f,baseY,13f,p)
@@ -175,11 +175,6 @@ private class GameView(context: Context) : View(context) {
             p.textSize = 19f; c.drawText("Tap anywhere to restart",w*.38f,h*.54f,p)
         }
     }
-
-    private fun sixty() =  sixtyValue
-    private val sixtyValue =  sixtyBase()
-    private fun sixtyBase() =  sixtyRadius()
-    private fun sixtyRadius() = 60f
 
     private fun drawControl(c: Canvas,x:Float,y:Float,label:String) {
         p.color = Color.argb(165,25,35,55); c.drawCircle(x,y,43f,p)
